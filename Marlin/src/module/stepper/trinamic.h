@@ -125,7 +125,7 @@ void reset_trinamic_drivers();
   extern TMC_CLASS(X, X) stepperX;
   static constexpr chopper_timing_t chopper_timing_X = CHOPPER_TIMING_X;
   #if ENABLED(SOFTWARE_DRIVER_ENABLE)
-    #define X_ENABLE_INIT() NOOP
+    #define X_ENABLE_INIT() OUT_WRITE(X_ENABLE_PIN, LOW)
     #define X_ENABLE_WRITE(STATE) stepperX.toff((STATE)==X_ENABLE_ON ? chopper_timing_X.toff : 0)
     #define X_ENABLE_READ() stepperX.isEnabled()
   #endif
@@ -139,7 +139,7 @@ void reset_trinamic_drivers();
   extern TMC_CLASS(Y, Y) stepperY;
   static constexpr chopper_timing_t chopper_timing_Y = CHOPPER_TIMING_Y;
   #if ENABLED(SOFTWARE_DRIVER_ENABLE)
-    #define Y_ENABLE_INIT() NOOP
+    #define Y_ENABLE_INIT() OUT_WRITE(Y_ENABLE_PIN, LOW)
     #define Y_ENABLE_WRITE(STATE) stepperY.toff((STATE)==Y_ENABLE_ON ? chopper_timing_Y.toff : 0)
     #define Y_ENABLE_READ() stepperY.isEnabled()
   #endif
@@ -153,7 +153,7 @@ void reset_trinamic_drivers();
   extern TMC_CLASS(Z, Z) stepperZ;
   static constexpr chopper_timing_t chopper_timing_Z = CHOPPER_TIMING_Z;
   #if ENABLED(SOFTWARE_DRIVER_ENABLE)
-    #define Z_ENABLE_INIT() NOOP
+    #define Z_ENABLE_INIT() OUT_WRITE(Z_ENABLE_PIN, LOW)
     #define Z_ENABLE_WRITE(STATE) stepperZ.toff((STATE)==Z_ENABLE_ON ? chopper_timing_Z.toff : 0)
     #define Z_ENABLE_READ() stepperZ.isEnabled()
   #endif
@@ -187,7 +187,7 @@ void reset_trinamic_drivers();
   #endif
   static constexpr chopper_timing_t chopper_timing_Y2 = CHOPPER_TIMING_Y2;
   #if ENABLED(SOFTWARE_DRIVER_ENABLE)
-    #define Y2_ENABLE_INIT() NOOP
+    #define Y2_ENABLE_INIT() OUT_WRITE(Y2_ENABLE_PIN, LOW)
     #define Y2_ENABLE_WRITE(STATE) stepperY2.toff((STATE)==Y_ENABLE_ON ? chopper_timing_Y2.toff : 0)
     #define Y2_ENABLE_READ() stepperY2.isEnabled()
   #endif
@@ -252,7 +252,7 @@ void reset_trinamic_drivers();
   extern TMC_CLASS(I, I) stepperI;
   static constexpr chopper_timing_t chopper_timing_I = CHOPPER_TIMING_I;
   #if ENABLED(SOFTWARE_DRIVER_ENABLE)
-    #define I_ENABLE_INIT() NOOP
+    #define I_ENABLE_INIT() OUT_WRITE(I_ENABLE_PIN, LOW)
     #define I_ENABLE_WRITE(STATE) stepperI.toff((STATE)==I_ENABLE_ON ? chopper_timing_I.toff : 0)
     #define I_ENABLE_READ() stepperI.isEnabled()
   #endif
