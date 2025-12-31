@@ -952,7 +952,7 @@
 #define HOMING_BUMP_MM      { 0, 0, 0, 0 }       // (linear=mm, rotational=°) Backoff from endstops after first bump
 #define HOMING_BUMP_DIVISOR { 2, 2, 4, 2 }       // Re-Bump Speed Divisor (Divides the Homing Feedrate)
 
-#define HOMING_BACKOFF_POST_MM { 2, 2, 2, 176 }  // (linear=mm, rotational=°) Backoff from endstops after homing
+#define HOMING_BACKOFF_POST_MM { 2, 30, 2, 176 }  // (linear=mm, rotational=°) Backoff from endstops after homing
 //#define XY_COUNTERPART_BACKOFF_MM 0         // (mm) Backoff X after homing Y, and vice-versa
 
 //#define QUICK_HOME                          // If G28 contains XY do a diagonal move first
@@ -3110,7 +3110,7 @@
   #endif
 
   #if AXIS_IS_TMC_CONFIG(X)
-    #define X_CURRENT       2000       // (mA) RMS current. Multiply by 1.414 for peak current.
+    #define X_CURRENT       3000       // (mA) RMS current. Multiply by 1.414 for peak current.
     #define X_CURRENT_HOME  1000       // (mA) RMS current for homing. (Typically lower than *_CURRENT.)
     #define X_MICROSTEPS     16        // 0..256
     #define X_RSENSE          0.075
@@ -3190,7 +3190,7 @@
   #endif
 
   #if AXIS_IS_TMC_CONFIG(I)
-    #define I_CURRENT      1000
+    #define I_CURRENT      2000
     #define I_CURRENT_HOME 1000
     #define I_MICROSTEPS    256
     #define I_RSENSE         0.075
