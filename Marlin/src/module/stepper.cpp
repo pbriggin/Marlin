@@ -312,10 +312,14 @@ xyze_int8_t Stepper::count_direction{0};
 // Test used to decide whether to step a motor if it...
 //  - Does not have a triggered endstop
 //  - Are not locked (as with dual stepper alignment)
-//  Example: STEPTEST(X,MAX,2) => TERN0(USE_X2_MAX, !(endstops.state(X2_MAX) && (count_direction[_AXIS(X)] > 0)) && !locked_X2_motor)
+//  Example: STEPTEST(X,MAX,2) => TERN0(HAS_X2_MAX_STATE, !(endstops.state(X2_MAX) && (count_direction[_AXIS(X)] > 0)) && !locked_X2_motor)
 //  See also: LCD_ENDSTOP_TEST in lcd/menu/menu_configuration.cpp
 //
-#define STEPTEST(A,M,I) TERN0(USE_##A##I##_##M, !(endstops.state(A##I##_##M) && M## DIR(A)) && !locked_ ##A##I##_motor)
+// NOTE: Use HAS_..._STATE (not USE_...) so SPI_ENDSTOPS (StallGuard) states
+//       are included. USE_A_MIN is 0 when A_SPI_SENSORLESS is true, which
+//       would prevent step pulses during dual-endstop homing.
+//
+#define STEPTEST(A,M,I) TERN0(HAS_##A##I##_##M##_STATE, !(endstops.state(A##I##_##M) && M## DIR(A)) && !locked_ ##A##I##_motor)
 
 // Direct Stepping wrapper for use in SOME_*_APPLY_STEP below:
 #define _STEP_WRITE(A,I,V) A##I##_STEP_WRITE(V)

@@ -1287,7 +1287,7 @@
 #define Y_MIN_ENDSTOP_HIT_STATE HIGH
 #define Y_MAX_ENDSTOP_HIT_STATE HIGH
 #define Z_MIN_ENDSTOP_HIT_STATE LOW
-#define Z_MAX_ENDSTOP_HIT_STATE HIGH
+#define Z_MAX_ENDSTOP_HIT_STATE LOW   // Hall effect sensor (active LOW)
 #define I_MIN_ENDSTOP_HIT_STATE LOW
 #define I_MAX_ENDSTOP_HIT_STATE HIGH
 #define J_MIN_ENDSTOP_HIT_STATE HIGH
@@ -1348,7 +1348,7 @@
  * Override with M92 (when enabled below)
  *                                      X, Y, Z [, I [, J [, K...]]], E0 [, E1[, E2...]]
  */
-#define DEFAULT_AXIS_STEPS_PER_UNIT   { 80, 80, 400, 142.222 }
+#define DEFAULT_AXIS_STEPS_PER_UNIT   { 63.662, 63.662, 400, 142.222 }
 
 /**
  * Enable support for M92. Disable to save at least ~530 bytes of flash.
@@ -1888,7 +1888,7 @@
 // Invert the stepper direction. Change (or reverse the motor connector) if an axis goes the wrong way.
 #define INVERT_X_DIR true
 #define INVERT_Y_DIR true
-#define INVERT_Z_DIR true
+#define INVERT_Z_DIR false
 #define INVERT_I_DIR true
 //#define INVERT_J_DIR false
 //#define INVERT_K_DIR false
@@ -1963,12 +1963,12 @@
 
 // Travel limits (linear=mm, rotational=°) after homing, corresponding to endstop positions.
 #define X_MIN_POS -2       // Position at endstop, +2mm backoff = 0
-#define Y_MIN_POS -30      // Position at endstop, +30mm backoff = 0
+#define Y_MIN_POS -2       // Position at endstop, +2mm backoff = 0
 #define Z_MIN_POS -40
 #define X_MAX_POS X_BED_SIZE
 #define Y_MAX_POS Y_BED_SIZE
 #define Z_MAX_POS 2        // Position at endstop, -2mm backoff = 0
-#define I_MIN_POS -162     // Set to 0 after 162° backoff
+#define I_MIN_POS -85.5    // Set to 0 after 85.5° backoff
 #define I_MAX_POS 360000   // Undefined - unlimited rotation with no software endstops
 //#define J_MIN_POS 0
 //#define J_MAX_POS 50
@@ -2428,7 +2428,7 @@
 #endif
 
 // Homing speeds (linear=mm/min, rotational=°/min)
-#define HOMING_FEEDRATE_MM_M { (50*60), (50*60), (75), (2500) }
+#define HOMING_FEEDRATE_MM_M { (50*60), (50*60), (10*60), (2500) }
 
 // Edit homing feedrates with M210 and MarlinUI menu items
 #define EDITABLE_HOMING_FEEDRATE

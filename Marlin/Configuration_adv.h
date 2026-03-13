@@ -893,9 +893,9 @@
 
 #if HAS_Y2_STEPPER
   //#define INVERT_Y2_VS_Y_DIR
-  //#define Y_DUAL_ENDSTOPS           // Y2 has its own endstop - disabled for sensorless
+  #define Y_DUAL_ENDSTOPS             // Y2 has its own endstop (via SPI StallGuard)
   #if ENABLED(Y_DUAL_ENDSTOPS)
-    #define Y2_STOP_PIN PE10          // Y2 endstop pin (E1_DIAG_PIN for sensorless)
+    //#define Y2_STOP_PIN PE10        // Not needed with SPI_ENDSTOPS
     #define Y2_ENDSTOP_ADJUSTMENT  0  // Y2 offset relative to Y endstop
   #endif
 #endif
@@ -952,7 +952,7 @@
 #define HOMING_BUMP_MM      { 0, 0, 0, 0 }       // (linear=mm, rotational=°) Backoff from endstops after first bump
 #define HOMING_BUMP_DIVISOR { 2, 2, 4, 2 }       // Re-Bump Speed Divisor (Divides the Homing Feedrate)
 
-#define HOMING_BACKOFF_POST_MM { 2, 2, 2, 162 }  // (linear=mm, rotational=°) Backoff from endstops after homing
+#define HOMING_BACKOFF_POST_MM { 2, 2, 2, 85.5 }  // (linear=mm, rotational=°) Backoff from endstops after homing
 //#define XY_COUNTERPART_BACKOFF_MM 0         // (mm) Backoff X after homing Y, and vice-versa
 
 //#define QUICK_HOME                          // If G28 contains XY do a diagonal move first
@@ -1306,11 +1306,11 @@
  * Enable DISABLE_IDLE_* to shut down axis steppers after an idle period.
  * The default timeout duration can be overridden with M18 and M84. Set to 0 for No Timeout.
  */
-#define DEFAULT_STEPPER_TIMEOUT_SEC 120
+#define DEFAULT_STEPPER_TIMEOUT_SEC 60
 #define DISABLE_IDLE_X
 #define DISABLE_IDLE_Y
 #define DISABLE_IDLE_Z    // Disable if the nozzle could fall onto your printed part!
-//#define DISABLE_IDLE_I
+#define DISABLE_IDLE_I
 //#define DISABLE_IDLE_J
 //#define DISABLE_IDLE_K
 //#define DISABLE_IDLE_U
@@ -3110,7 +3110,7 @@
   #endif
 
   #if AXIS_IS_TMC_CONFIG(X)
-    #define X_CURRENT       3000       // (mA) RMS current. Multiply by 1.414 for peak current.
+    #define X_CURRENT       2000       // (mA) RMS current. Multiply by 1.414 for peak current.
     #define X_CURRENT_HOME  1000       // (mA) RMS current for homing. (Typically lower than *_CURRENT.)
     #define X_MICROSTEPS     16        // 0..256
     #define X_RSENSE          0.075
@@ -3428,9 +3428,9 @@
    * When disabled, Marlin will use spreadCycle stepping mode.
    */
   #if HAS_STEALTHCHOP
-    #define STEALTHCHOP_XY
+    //#define STEALTHCHOP_XY
     //#define STEALTHCHOP_Z
-    #define STEALTHCHOP_I
+    //#define STEALTHCHOP_I
     #define STEALTHCHOP_J
     #define STEALTHCHOP_K
     #define STEALTHCHOP_U
@@ -3567,7 +3567,7 @@
     #define X2_STALL_SENSITIVITY X_STALL_SENSITIVITY
     #define Y_STALL_SENSITIVITY  1
     #define Y2_STALL_SENSITIVITY Y_STALL_SENSITIVITY
-    #define Z_STALL_SENSITIVITY  5
+    //#define Z_STALL_SENSITIVITY  5  // Disabled: Z uses hall effect sensor
     //#define Z2_STALL_SENSITIVITY Z_STALL_SENSITIVITY
     //#define Z3_STALL_SENSITIVITY Z_STALL_SENSITIVITY
     //#define Z4_STALL_SENSITIVITY Z_STALL_SENSITIVITY
