@@ -1098,7 +1098,11 @@ void CardReader::write_command(char * const buf) {
 // Close the working file.
 //
 void CardReader::closefile(const bool store_location/*=false*/) {
-  myfile.sync();
+  (void)closefile_checked(store_location);
+}
+
+bool CardReader::closefile_checked(const bool store_location/*=false*/) {
+  const bool synced = myfile.isOpen() && myfile.sync();
   myfile.close();
   flag.saving = flag.logging = false;
   sdpos = 0;
@@ -1111,6 +1115,7 @@ void CardReader::closefile(const bool store_location/*=false*/) {
     // TODO: Store printer state, filename, position
     // for continuing a stopped print.
   }
+  return synced;
 }
 
 //

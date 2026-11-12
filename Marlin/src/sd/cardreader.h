@@ -222,6 +222,7 @@ public:
   static void openFileRead(const char * const path, const uint8_t subcall=0);
   static void openFileWrite(const char * const path);
   static void closefile(const bool store_location=false);
+  static bool closefile_checked(const bool store_location=false);
   static bool fileExists(const char * const name);
   static void removeFile(const char * const name);
 

@@ -85,7 +85,7 @@ private:
             data_waiting += processed_count;
             if (data_waiting == sizeof(decode_buffer)) {
               if (!dummy_transfer)
-                if (card.write(decode_buffer, data_waiting) < 0) {
+                if (card.write(decode_buffer, data_waiting) != data_waiting) {
                   return false;
                 }
               data_waiting = 0;
@@ -95,7 +95,7 @@ private:
         return true;
       }
     #endif
-    return (dummy_transfer || card.write(buffer, length) >= 0);
+    return (dummy_transfer || card.write(buffer, length) == length);
   }
 
   static bool file_close() {
@@ -103,12 +103,13 @@ private:
       #if ENABLED(BINARY_STREAM_COMPRESSION)
         // flush any buffered data
         if (data_waiting) {
-          if (card.write(decode_buffer, data_waiting) < 0) return false;
+          if (card.write(decode_buffer, data_waiting) != data_waiting) return false;
           data_waiting = 0;
         }
       #endif
-      card.closefile();
+      const bool closed = card.closefile_checked();
       card.release();
+      if (!closed) return false;
     }
     TERN_(BINARY_STREAM_COMPRESSION, heatshrink_decoder_finish(&hsd));
     transfer_active = false;
@@ -221,7 +222,7 @@ public:
       uint8_t protocol() { return (meta >> 4) & 0xF; }
       uint8_t type() { return meta & 0xF; }
       void reset() { token = 0; sync = 0; meta = 0; size = 0; checksum = 0; }
-      uint8_t data[2];
+      uint8_t data[8];
     };
 
     union Footer {
@@ -229,7 +230,7 @@ public:
         uint16_t checksum; // full packet checksum
       };
       void reset() { checksum = 0; }
-      uint8_t data[1];
+      uint8_t data[2];
     };
 
     Header header;
@@ -393,9 +394,14 @@ public:
           packet_retries = 0;
           bytes_received += packet.header.size;
 
-          SERIAL_ECHOLNPGM("ok", packet.header.sync); // transmit valid packet received
           dispatch();
+          SERIAL_ECHOLNPGM("ok", packet.header.sync); // acknowledge after processing the packet
           stream_state = StreamState::PACKET_RESET;
+          // The host may send ASCII immediately after receiving this ack. Leave
+          // the receive loop before it can consume those bytes as BFT traffic.
+          if (static_cast<Protocol>(packet.header.protocol()) == Protocol::CONTROL
+              && static_cast<ProtocolControl>(packet.header.type()) == ProtocolControl::CLOSE)
+            return;
           break;
         case StreamState::PACKET_RESEND:
           if (packet_retries < max_retries || max_retries == 0) {
