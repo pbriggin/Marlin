@@ -263,6 +263,24 @@
     #endif
   }
 
+  /**
+   * M915: Report the volatile open-load event ring. M915 S1 clears it.
+   * The Raspberry Pi receives each event immediately; this ring is diagnostic
+   * convenience only and is lost on reset.
+   */
+  #if ENABLED(STOP_ON_ERROR)
+    void GcodeSuite::M915() {
+      if (parser.boolval('S')) {
+        tmc_open_load_history_clear();
+        SERIAL_ECHOLNPGM("TMC_OPEN_LOAD_HISTORY|cleared=1");
+      }
+      else
+        tmc_open_load_history_report();
+    }
+  #else
+    void GcodeSuite::M915() { SERIAL_ECHOLNPGM("TMC open-load stop logic disabled"); }
+  #endif
+
 #endif // MONITOR_DRIVER_STATUS
 
 #if ENABLED(HYBRID_THRESHOLD)

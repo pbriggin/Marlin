@@ -1279,6 +1279,7 @@ private:
     #if ENABLED(MONITOR_DRIVER_STATUS)
       static void M911();
       static void M912();
+      static void M915(); // Report/clear volatile TMC open-load event history
     #endif
     #if ENABLED(HYBRID_THRESHOLD)
       static void M913();

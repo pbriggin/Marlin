@@ -3497,6 +3497,7 @@
     #define CURRENT_STEP_DOWN     50  // [mA]
     #define REPORT_CURRENT_CHANGE
     #define STOP_ON_ERROR
+    #define TMC_OPEN_LOAD_PERSISTENCE_POLLS 3 // Consecutive status samples before an open-load stop
   #endif
 
   // @section tmc/hybrid

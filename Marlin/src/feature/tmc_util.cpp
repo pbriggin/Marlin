@@ -32,6 +32,7 @@
 
 #include "tmc_util.h"
 
+#include "../module/stepper.h"
 #include "../module/stepper/indirection.h"
 #include "../module/printcounter.h"
 #include "../libs/duration_t.h"
@@ -66,7 +67,9 @@
     bool is_otpw:1,
          is_ot:1,
          is_s2g:1,
-         is_error:1
+         is_error:1,
+         is_ola:1,
+         is_olb:1
          #if ENABLED(TMC_DEBUG)
            , is_stall:1
            , is_stealth:1
@@ -94,7 +97,7 @@
 
     static TMC_driver_data get_driver_data(TMC2130Stepper &st) {
       constexpr uint8_t OT_bp = 25, OTPW_bp = 26;
-      constexpr uint32_t S2G_bm = 0x18000000;
+      constexpr uint32_t S2G_bm = 0x18003000; // short to GND (27:28) or supply (12:13)
       #if ENABLED(TMC_DEBUG)
         constexpr uint16_t SG_RESULT_bm = 0x3FF; // 0:9
         constexpr uint8_t STEALTH_bp = 14;
@@ -102,7 +105,7 @@
         constexpr uint8_t STALL_GUARD_bp = 24;
         constexpr uint8_t STST_bp = 31;
       #endif
-      TMC_driver_data data;
+      TMC_driver_data data = {};
       const auto ds = data.drv_status = st.DRV_STATUS();
       #ifdef __AVR__
 
@@ -118,7 +121,7 @@
         spart = ds >> 24;
         data.is_ot = TEST(spart, OT_bp - 24);
         data.is_otpw = TEST(spart, OTPW_bp - 24);
-        data.is_s2g = !!(spart & (S2G_bm >> 24));
+        data.is_s2g = !!(ds & S2G_bm);
         #if ENABLED(TMC_DEBUG)
           data.is_stall = TEST(spart, STALL_GUARD_bp - 24);
           data.is_standstill = TEST(spart, STST_bp - 24);
@@ -130,6 +133,11 @@
         data.is_ot = TEST(ds, OT_bp);
         data.is_otpw = TEST(ds, OTPW_bp);
         data.is_s2g = !!(ds & S2G_bm);
+      // TMC5160 DRV_STATUS: ola/olb are informational open-load indicators.
+      // They are only considered below while the motor is enabled, moving,
+      // in spreadCycle, and the indication persists across multiple polls.
+      data.is_ola = TEST(ds, 29);
+      data.is_olb = TEST(ds, 30);
         #if ENABLED(TMC_DEBUG)
           constexpr uint8_t CS_ACTUAL_sb = 16;
           data.sg_result = ds & SG_RESULT_bm;
@@ -163,7 +171,7 @@
         constexpr uint8_t STALL_GUARD_bp = 24;
         constexpr uint8_t STST_bp = 31;
       #endif
-      TMC_driver_data data;
+      TMC_driver_data data = {};
       const auto ds = data.drv_status = st.DRV_STATUS();
       #ifdef __AVR__
 
@@ -217,7 +225,7 @@
     static TMC_driver_data get_driver_data(TMC2208Stepper &st) {
       constexpr uint8_t OTPW_bp = 0, OT_bp = 1;
       constexpr uint8_t S2G_bm = 0b111100; // 2..5
-      TMC_driver_data data;
+      TMC_driver_data data = {};
       const auto ds = data.drv_status = st.DRV_STATUS();
       data.is_otpw = TEST(ds, OTPW_bp);
       data.is_ot = TEST(ds, OT_bp);
@@ -254,7 +262,7 @@
     static TMC_driver_data get_driver_data(TMC2660Stepper &st) {
       constexpr uint8_t OT_bp = 1, OTPW_bp = 2;
       constexpr uint8_t S2G_bm = 0b11000;
-      TMC_driver_data data;
+      TMC_driver_data data = {};
       const auto ds = data.drv_status = st.DRVSTATUS();
       uint8_t spart = ds & 0xFF;
       data.is_otpw = TEST(spart, OTPW_bp);
@@ -275,15 +283,41 @@
   #endif // TMC2660
 
   #if ENABLED(STOP_ON_ERROR)
-    void report_driver_error(const TMC_driver_data &data) {
-      SERIAL_ECHOPGM(" driver error detected: 0x");
-      SERIAL_PRINTLN(data.drv_status, PrintBase::Hex);
-      if (data.is_ot) SERIAL_ECHOLNPGM("overtemperature");
-      if (data.is_s2g) SERIAL_ECHOLNPGM("coil short circuit");
-      TERN_(TMC_DEBUG, tmc_report_all());
+    static uint32_t tmc_fault_event_count;
+    static uint8_t open_load_history_count;
+    static uint8_t open_load_history_head;
+    struct OpenLoadEvent { char driver[3]; char coil; uint32_t status, uptime_ms, count; };
+    static OpenLoadEvent open_load_history[8];
+
+    template<typename TMC>
+    void report_driver_error(TMC &st, const TMC_driver_data &data, const char *kind, const char coil = '-') {
+      const uint32_t event_count = ++tmc_fault_event_count;
+      // Emit the complete event before kill() can halt the serial protocol.
+      SERIAL_ECHOPGM("TMC_FAULT|v=1|kind="); SERIAL_ECHOPGM(kind);
+      SERIAL_ECHOPGM("|driver="); st.printLabel();
+      SERIAL_ECHOPGM("|coil="); SERIAL_CHAR(coil);
+      SERIAL_ECHOPGM("|status=0x"); SERIAL_PRINT(data.drv_status, PrintBase::Hex);
+      SERIAL_ECHOPGM("|uptime_ms="); SERIAL_PRINT(millis(), PrintBase::Dec);
+      SERIAL_ECHOPGM("|count="); SERIAL_PRINTLN(event_count, PrintBase::Dec);
+      SERIAL_FLUSHTX();
       TERN_(SOVOL_SV06_RTS, rts.gotoPage(ID_DriverError_L, ID_DriverError_D));
-      marlin.kill(F("Driver error"));
+      marlin.kill(F("TMC driver fault"));
     }
+
+    void tmc_open_load_history_report() {
+      SERIAL_ECHOLNPGM("TMC_OPEN_LOAD_HISTORY|count=", open_load_history_count);
+      for (uint8_t i = 0; i < open_load_history_count; ++i) {
+        const uint8_t ix = (open_load_history_head + 8 - open_load_history_count + i) & 7;
+        const OpenLoadEvent &e = open_load_history[ix];
+        SERIAL_ECHOPGM("TMC_OPEN_LOAD|driver="); SERIAL_ECHOPGM(e.driver);
+        SERIAL_ECHOPGM("|coil="); SERIAL_CHAR(e.coil);
+        SERIAL_ECHOPGM("|status=0x"); SERIAL_PRINT(e.status, PrintBase::Hex);
+        SERIAL_ECHOPGM("|uptime_ms="); SERIAL_PRINT(e.uptime_ms, PrintBase::Dec);
+        SERIAL_ECHOPGM("|count="); SERIAL_PRINTLN(e.count, PrintBase::Dec);
+      }
+    }
+
+    void tmc_open_load_history_clear() { open_load_history_count = open_load_history_head = 0; }
   #endif
 
   template<typename TMC>
@@ -353,7 +387,7 @@
   #endif
 
   template<typename TMC>
-  bool monitor_tmc_driver(TMC &st, const bool need_update_error_counters, const bool need_debug_reporting) {
+  bool monitor_tmc_driver(TMC &st, const char *name, const bool need_update_error_counters, const bool need_debug_reporting, const bool axis_is_moving = false) {
     TMC_driver_data data = get_driver_data(st);
     if (data.drv_status == 0xFFFFFFFF || data.drv_status == 0x0) return false;
 
@@ -365,10 +399,67 @@
 
       #if ENABLED(STOP_ON_ERROR)
         if (st.error_count >= 10) {
-          SERIAL_EOL();
-          st.printLabel();
-          report_driver_error(data);
+          report_driver_error(st, data, data.is_ot ? "overtemperature" : "short",
+            (data.drv_status & ((1UL << 27) | (1UL << 12))) ? 'A' : (data.is_s2g ? 'B' : '-'));
         }
+
+        // The TMC5160 datasheet warns that ola/olb may be false in fast motion
+        // and standstill. To catch wiring faults during a job, count only
+        // samples while this driver's X or Y axis is actively stepping, and
+        // require a persistent indication. Ignore standstill and StealthChop.
+        #if HAS_TMCX1X0
+          const block_t *active_block = planner.get_future_block(0);
+          const bool valid_ol_sample = axis_is_moving && st.isEnabled() && active_block && !TEST(data.drv_status, 31) && !TEST(data.drv_status, 14);
+          const bool ola = valid_ol_sample && data.is_ola;
+          const bool olb = valid_ol_sample && data.is_olb;
+          if (ola && !st.ola_latched) {
+            const uint8_t ix = open_load_history_head;
+            OpenLoadEvent &e = open_load_history[ix];
+            e.driver[0] = name[0]; e.driver[1] = name[1]; e.driver[2] = '\0';
+            e.coil = 'A'; e.status = data.drv_status; e.uptime_ms = millis(); e.count = ++tmc_fault_event_count;
+            open_load_history_head = (open_load_history_head + 1) & 7;
+            if (open_load_history_count < 8) ++open_load_history_count;
+            SERIAL_ECHOPGM("TMC_OPEN_LOAD|driver="); SERIAL_ECHOPGM(name);
+            SERIAL_ECHOPGM("|coil=A|status=0x"); SERIAL_PRINT(data.drv_status, PrintBase::Hex);
+            SERIAL_ECHOPGM("|uptime_ms="); SERIAL_PRINT(millis(), PrintBase::Dec);
+            SERIAL_ECHOPGM("|count="); SERIAL_PRINTLN(tmc_fault_event_count, PrintBase::Dec);
+            SERIAL_FLUSHTX();
+          }
+          if (olb && !st.olb_latched) {
+            const uint8_t ix = open_load_history_head;
+            OpenLoadEvent &e = open_load_history[ix];
+            e.driver[0] = name[0]; e.driver[1] = name[1]; e.driver[2] = '\0';
+            e.coil = 'B'; e.status = data.drv_status; e.uptime_ms = millis(); e.count = ++tmc_fault_event_count;
+            open_load_history_head = (open_load_history_head + 1) & 7;
+            if (open_load_history_count < 8) ++open_load_history_count;
+            SERIAL_ECHOPGM("TMC_OPEN_LOAD|driver="); SERIAL_ECHOPGM(name);
+            SERIAL_ECHOPGM("|coil=B|status=0x"); SERIAL_PRINT(data.drv_status, PrintBase::Hex);
+            SERIAL_ECHOPGM("|uptime_ms="); SERIAL_PRINT(millis(), PrintBase::Dec);
+            SERIAL_ECHOPGM("|count="); SERIAL_PRINTLN(tmc_fault_event_count, PrintBase::Dec);
+            SERIAL_FLUSHTX();
+          }
+          st.ola_latched = ola;
+          st.olb_latched = olb;
+          st.ola_count = ola ? MIN(uint8_t(TMC_OPEN_LOAD_PERSISTENCE_POLLS), uint8_t(st.ola_count + 1)) : 0;
+          st.olb_count = olb ? MIN(uint8_t(TMC_OPEN_LOAD_PERSISTENCE_POLLS), uint8_t(st.olb_count + 1)) : 0;
+          if (st.ola_count >= TMC_OPEN_LOAD_PERSISTENCE_POLLS || st.olb_count >= TMC_OPEN_LOAD_PERSISTENCE_POLLS) {
+            const char coil = st.ola_count >= TMC_OPEN_LOAD_PERSISTENCE_POLLS ? 'A' : 'B';
+            const uint8_t ix = open_load_history_head;
+            OpenLoadEvent &e = open_load_history[ix];
+            e.driver[0] = name[0]; e.driver[1] = name[1]; e.driver[2] = '\0';
+            e.coil = coil; e.status = data.drv_status; e.uptime_ms = millis(); e.count = ++tmc_fault_event_count;
+            open_load_history_head = (open_load_history_head + 1) & 7;
+            if (open_load_history_count < 8) ++open_load_history_count;
+            // Machine-readable event is sent and drained before fatal-stop.
+            SERIAL_ECHOPGM("TMC_FAULT|v=1|kind=open_load|driver="); SERIAL_ECHOPGM(name);
+            SERIAL_ECHOPGM("|coil="); SERIAL_CHAR(coil);
+            SERIAL_ECHOPGM("|status=0x"); SERIAL_PRINT(data.drv_status, PrintBase::Hex);
+            SERIAL_ECHOPGM("|uptime_ms="); SERIAL_PRINT(millis(), PrintBase::Dec);
+            SERIAL_ECHOPGM("|count="); SERIAL_PRINTLN(tmc_fault_event_count, PrintBase::Dec);
+            SERIAL_FLUSHTX();
+            marlin.kill(F("TMC open load"));
+          }
+        #endif
       #endif
 
       // Report if a warning was triggered
@@ -414,30 +505,36 @@
 
     if (need_update_error_counters || need_debug_reporting) {
 
+      #if HAS_STANDARD_MOTION
+        #define TMC_AXIS_IS_MOVING(A) Stepper::axis_is_moving(A)
+      #else
+        #define TMC_AXIS_IS_MOVING(A) false
+      #endif
+
       #if X_IS_TRINAMIC || X2_IS_TRINAMIC
-        if ( TERN0(X_IS_TRINAMIC, monitor_tmc_driver(stepperX, need_update_error_counters, need_debug_reporting))
-          || TERN0(X2_IS_TRINAMIC, monitor_tmc_driver(stepperX2, need_update_error_counters, need_debug_reporting))
-        ) {
+        const bool x_fault = TERN0(X_IS_TRINAMIC, monitor_tmc_driver(stepperX, "X", need_update_error_counters, need_debug_reporting, TMC_AXIS_IS_MOVING(X_AXIS)));
+        const bool x2_fault = TERN0(X2_IS_TRINAMIC, monitor_tmc_driver(stepperX2, "X2", need_update_error_counters, need_debug_reporting, TMC_AXIS_IS_MOVING(X_AXIS)));
+        if (x_fault || x2_fault) {
           TERN_(X_IS_TRINAMIC, step_current_down(stepperX));
           TERN_(X2_IS_TRINAMIC, step_current_down(stepperX2));
         }
       #endif
 
       #if Y_IS_TRINAMIC || Y2_IS_TRINAMIC
-        if ( TERN0(Y_IS_TRINAMIC, monitor_tmc_driver(stepperY, need_update_error_counters, need_debug_reporting))
-          || TERN0(Y2_IS_TRINAMIC, monitor_tmc_driver(stepperY2, need_update_error_counters, need_debug_reporting))
-        ) {
+        const bool y_fault = TERN0(Y_IS_TRINAMIC, monitor_tmc_driver(stepperY, "Y", need_update_error_counters, need_debug_reporting, TMC_AXIS_IS_MOVING(Y_AXIS)));
+        const bool y2_fault = TERN0(Y2_IS_TRINAMIC, monitor_tmc_driver(stepperY2, "Y2", need_update_error_counters, need_debug_reporting, TMC_AXIS_IS_MOVING(Y_AXIS)));
+        if (y_fault || y2_fault) {
           TERN_(Y_IS_TRINAMIC, step_current_down(stepperY));
           TERN_(Y2_IS_TRINAMIC, step_current_down(stepperY2));
         }
       #endif
 
       #if ANY(Z_IS_TRINAMIC, Z2_IS_TRINAMIC, Z3_IS_TRINAMIC, Z4_IS_TRINAMIC)
-        if ( TERN0(Z_IS_TRINAMIC,  monitor_tmc_driver(stepperZ,  need_update_error_counters, need_debug_reporting))
-          || TERN0(Z2_IS_TRINAMIC, monitor_tmc_driver(stepperZ2, need_update_error_counters, need_debug_reporting))
-          || TERN0(Z3_IS_TRINAMIC, monitor_tmc_driver(stepperZ3, need_update_error_counters, need_debug_reporting))
-          || TERN0(Z4_IS_TRINAMIC, monitor_tmc_driver(stepperZ4, need_update_error_counters, need_debug_reporting))
-        ) {
+        const bool z_fault = TERN0(Z_IS_TRINAMIC, monitor_tmc_driver(stepperZ, "Z", need_update_error_counters, need_debug_reporting));
+        const bool z2_fault = TERN0(Z2_IS_TRINAMIC, monitor_tmc_driver(stepperZ2, "Z2", need_update_error_counters, need_debug_reporting));
+        const bool z3_fault = TERN0(Z3_IS_TRINAMIC, monitor_tmc_driver(stepperZ3, "Z3", need_update_error_counters, need_debug_reporting));
+        const bool z4_fault = TERN0(Z4_IS_TRINAMIC, monitor_tmc_driver(stepperZ4, "Z4", need_update_error_counters, need_debug_reporting));
+        if (z_fault || z2_fault || z3_fault || z4_fault) {
           TERN_(Z_IS_TRINAMIC,  step_current_down(stepperZ));
           TERN_(Z2_IS_TRINAMIC, step_current_down(stepperZ2));
           TERN_(Z3_IS_TRINAMIC, step_current_down(stepperZ3));
@@ -446,38 +543,40 @@
       #endif
 
       #if I_IS_TRINAMIC
-        if (monitor_tmc_driver(stepperI, need_update_error_counters, need_debug_reporting))
+        if (monitor_tmc_driver(stepperI, "I", need_update_error_counters, need_debug_reporting))
           step_current_down(stepperI);
       #endif
       #if J_IS_TRINAMIC
-        if (monitor_tmc_driver(stepperJ, need_update_error_counters, need_debug_reporting))
+        if (monitor_tmc_driver(stepperJ, "J", need_update_error_counters, need_debug_reporting))
           step_current_down(stepperJ);
       #endif
       #if K_IS_TRINAMIC
-        if (monitor_tmc_driver(stepperK, need_update_error_counters, need_debug_reporting))
+        if (monitor_tmc_driver(stepperK, "K", need_update_error_counters, need_debug_reporting))
           step_current_down(stepperK);
       #endif
       #if U_IS_TRINAMIC
-        if (monitor_tmc_driver(stepperU, need_update_error_counters, need_debug_reporting))
+        if (monitor_tmc_driver(stepperU, "U", need_update_error_counters, need_debug_reporting))
           step_current_down(stepperU);
       #endif
       #if V_IS_TRINAMIC
-        if (monitor_tmc_driver(stepperV, need_update_error_counters, need_debug_reporting))
+        if (monitor_tmc_driver(stepperV, "V", need_update_error_counters, need_debug_reporting))
           step_current_down(stepperV);
       #endif
       #if W_IS_TRINAMIC
-        if (monitor_tmc_driver(stepperW, need_update_error_counters, need_debug_reporting))
+        if (monitor_tmc_driver(stepperW, "W", need_update_error_counters, need_debug_reporting))
           step_current_down(stepperW);
       #endif
 
-      TERN_(E0_IS_TRINAMIC, (void)monitor_tmc_driver(stepperE0, need_update_error_counters, need_debug_reporting));
-      TERN_(E1_IS_TRINAMIC, (void)monitor_tmc_driver(stepperE1, need_update_error_counters, need_debug_reporting));
-      TERN_(E2_IS_TRINAMIC, (void)monitor_tmc_driver(stepperE2, need_update_error_counters, need_debug_reporting));
-      TERN_(E3_IS_TRINAMIC, (void)monitor_tmc_driver(stepperE3, need_update_error_counters, need_debug_reporting));
-      TERN_(E4_IS_TRINAMIC, (void)monitor_tmc_driver(stepperE4, need_update_error_counters, need_debug_reporting));
-      TERN_(E5_IS_TRINAMIC, (void)monitor_tmc_driver(stepperE5, need_update_error_counters, need_debug_reporting));
-      TERN_(E6_IS_TRINAMIC, (void)monitor_tmc_driver(stepperE6, need_update_error_counters, need_debug_reporting));
-      TERN_(E7_IS_TRINAMIC, (void)monitor_tmc_driver(stepperE7, need_update_error_counters, need_debug_reporting));
+      TERN_(E0_IS_TRINAMIC, (void)monitor_tmc_driver(stepperE0, "E0", need_update_error_counters, need_debug_reporting));
+      TERN_(E1_IS_TRINAMIC, (void)monitor_tmc_driver(stepperE1, "E1", need_update_error_counters, need_debug_reporting));
+      TERN_(E2_IS_TRINAMIC, (void)monitor_tmc_driver(stepperE2, "E2", need_update_error_counters, need_debug_reporting));
+      TERN_(E3_IS_TRINAMIC, (void)monitor_tmc_driver(stepperE3, "E3", need_update_error_counters, need_debug_reporting));
+      TERN_(E4_IS_TRINAMIC, (void)monitor_tmc_driver(stepperE4, "E4", need_update_error_counters, need_debug_reporting));
+      TERN_(E5_IS_TRINAMIC, (void)monitor_tmc_driver(stepperE5, "E5", need_update_error_counters, need_debug_reporting));
+      TERN_(E6_IS_TRINAMIC, (void)monitor_tmc_driver(stepperE6, "E6", need_update_error_counters, need_debug_reporting));
+      TERN_(E7_IS_TRINAMIC, (void)monitor_tmc_driver(stepperE7, "E7", need_update_error_counters, need_debug_reporting));
+
+      #undef TMC_AXIS_IS_MOVING
 
       if (TERN0(TMC_DEBUG, need_debug_reporting)) SERIAL_EOL();
     }

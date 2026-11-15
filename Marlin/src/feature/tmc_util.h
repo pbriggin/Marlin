@@ -62,7 +62,10 @@ class TMCStorage {
 
     #if ENABLED(MONITOR_DRIVER_STATUS)
       uint8_t otpw_count = 0,
-              error_count = 0;
+              error_count = 0,
+              ola_count = 0,
+              olb_count = 0;
+      bool ola_latched = false, olb_latched = false;
       bool flag_otpw = false;
       bool getOTPW() { return flag_otpw; }
       void clear_otpw() { flag_otpw = 0; }
@@ -397,6 +400,11 @@ void test_tmc_connection(LOGICAL_AXIS_DECL_LC(const bool, true));
   #endif
   void tmc_report_all(LOGICAL_AXIS_DECL_LC(const bool, true));
   void tmc_get_registers(LOGICAL_AXIS_ARGS_LC(const bool));
+#endif
+
+#if ENABLED(MONITOR_DRIVER_STATUS) && ENABLED(STOP_ON_ERROR)
+  void tmc_open_load_history_report();
+  void tmc_open_load_history_clear();
 #endif
 
 /**

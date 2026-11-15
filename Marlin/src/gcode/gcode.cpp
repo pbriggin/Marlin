@@ -1064,6 +1064,7 @@ void GcodeSuite::process_parsed_command(bool no_ok/*=false*/) {
         #if ENABLED(MONITOR_DRIVER_STATUS)
           case 911: M911(); break;                                // M911: Report TMC2130 prewarn triggered flags
           case 912: M912(); break;                                // M912: Clear TMC2130 prewarn triggered flags
+          case 915: M915(); break;                                // M915: Report/clear TMC open-load event history
         #endif
         #if ENABLED(HYBRID_THRESHOLD)
           case 913: M913(); break;                                // M913: Set HYBRID_THRESHOLD speed
