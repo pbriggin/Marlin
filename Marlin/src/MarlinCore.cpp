@@ -498,6 +498,7 @@ void Marlin::manage_inactivity(const bool no_stepper_sleep/*=false*/) {
       #define KILL_DELAY 250
     #endif
 
+    PORT_REDIRECT(SerialMask::All); // Kill reports go to every host, even mid SD command
     static int killCount = 0;   // make the inactivity button a bit less responsive
     static int killPeak = 0;    // highest count reached during the current assertion
     if (kill_state()) {
@@ -918,6 +919,10 @@ void Marlin::idle(const bool no_stepper_sleep/*=false*/) {
  * After this the machine will need to be reset.
  */
 void Marlin::kill(FSTR_P const lcd_error/*=nullptr*/, FSTR_P const lcd_component/*=nullptr*/, const bool steppers_off/*=false*/) {
+  // A kill raised from idle() while an SD command is being processed inherits
+  // that command's port mask, which is "no port". Send the halt to every host.
+  PORT_REDIRECT(SerialMask::All);
+
   thermalManager.disable_all_heaters();
 
   TERN_(HAS_CUTTER, cutter.kill()); // Full cutter shutdown including ISR control
