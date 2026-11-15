@@ -289,19 +289,53 @@
     struct OpenLoadEvent { char driver[3]; char coil; bool eligible; uint32_t status, uptime_ms, count; };
     static OpenLoadEvent open_load_history[8];
 
+    // Record an open-load observation in the volatile ring (see M915)
+    static uint32_t record_open_load_event(const char * const name, const char coil, const bool eligible, const uint32_t status) {
+      OpenLoadEvent &e = open_load_history[open_load_history_head];
+      e.driver[0] = name[0]; e.driver[1] = name[1]; e.driver[2] = '\0';
+      e.coil = coil; e.eligible = eligible; e.status = status; e.uptime_ms = millis(); e.count = ++tmc_fault_event_count;
+      open_load_history_head = (open_load_history_head + 1) & 7;
+      if (open_load_history_count < 8) ++open_load_history_count;
+      return e.count;
+    }
+
+    // Report a raw open-load flag edge, with the gates used by the stop filter
+    static void report_open_load_edge(const char * const name, const char coil, const uint32_t status,
+                                      const bool moving, const bool enabled, const bool stealth, const bool eligible) {
+      const uint32_t count = record_open_load_event(name, coil, eligible, status);
+      SERIAL_ECHOPGM("TMC_OPEN_LOAD|driver="); SERIAL_ECHOPGM(name);
+      SERIAL_ECHOPGM("|coil="); SERIAL_CHAR(coil);
+      SERIAL_ECHOPGM("|status=0x"); SERIAL_PRINT(status, PrintBase::Hex);
+      SERIAL_ECHOPGM("|uptime_ms="); SERIAL_PRINT(millis(), PrintBase::Dec);
+      SERIAL_ECHOPGM("|count="); SERIAL_PRINT(count, PrintBase::Dec);
+      SERIAL_ECHOPGM("|moving="); SERIAL_PRINT(moving ? 1 : 0, PrintBase::Dec);
+      SERIAL_ECHOPGM("|enabled="); SERIAL_PRINT(enabled ? 1 : 0, PrintBase::Dec);
+      SERIAL_ECHOPGM("|standstill=0|stealth="); SERIAL_PRINT(stealth ? 1 : 0, PrintBase::Dec);
+      SERIAL_ECHOPGM("|eligible="); SERIAL_PRINTLN(eligible ? 1 : 0, PrintBase::Dec);
+    }
+
+    // Halt after a TMC_FAULT record has been written. Motion was already
+    // stopped with planner.quick_stop(), so the diagnostic dump costs no travel.
+    // No explicit TX flush is needed (or available on the STM32 HAL): serial
+    // writes block while the TX buffer is full, and minkill() waits ~600ms
+    // with interrupts enabled before halting, which drains the remainder.
+    static void tmc_fault_halt(FSTR_P const msg) {
+      TERN_(TMC_DEBUG, tmc_report_all());
+      marlin.kill(msg);
+    }
+
     template<typename TMC>
     void report_driver_error(TMC &st, const TMC_driver_data &data, const char *kind, const char coil = '-') {
+      planner.quick_stop(); // Stop motion now; kill() alone lets queued blocks run ~600ms longer
       const uint32_t event_count = ++tmc_fault_event_count;
-      // Emit the complete event before kill() can halt the serial protocol.
       SERIAL_ECHOPGM("TMC_FAULT|v=1|kind="); SERIAL_ECHOPGM(kind);
       SERIAL_ECHOPGM("|driver="); st.printLabel();
       SERIAL_ECHOPGM("|coil="); SERIAL_CHAR(coil);
       SERIAL_ECHOPGM("|status=0x"); SERIAL_PRINT(data.drv_status, PrintBase::Hex);
       SERIAL_ECHOPGM("|uptime_ms="); SERIAL_PRINT(millis(), PrintBase::Dec);
       SERIAL_ECHOPGM("|count="); SERIAL_PRINTLN(event_count, PrintBase::Dec);
-      SERIAL_FLUSHTX();
       TERN_(SOVOL_SV06_RTS, rts.gotoPage(ID_DriverError_L, ID_DriverError_D));
-      marlin.kill(F("TMC driver fault"));
+      tmc_fault_halt(F("TMC driver fault"));
     }
 
     void tmc_open_load_history_report() {
@@ -411,69 +445,33 @@
         // require a planner lookahead block here: the active stepper block can
         // be executing even when get_future_block(0) has no eligible block.
         #if HAS_TMCX1X0
-          const bool raw_ola = data.is_ola, raw_olb = data.is_olb;
-          const bool valid_ol_sample = axis_is_moving && st.isEnabled() && !TEST(data.drv_status, 31) && !TEST(data.drv_status, 14);
-          const bool ola = valid_ol_sample && data.is_ola;
-          const bool olb = valid_ol_sample && data.is_olb;
-          // Log raw flag edges even when the stop filter rejects them. This
-          // distinguishes "the driver never asserted OL" from "OL was seen
-          // but the motion / chopper eligibility filter rejected the sample."
-          if (raw_ola && !st.ola_latched) {
-            const uint8_t ix = open_load_history_head;
-            OpenLoadEvent &e = open_load_history[ix];
-            e.driver[0] = name[0]; e.driver[1] = name[1]; e.driver[2] = '\0';
-            e.coil = 'A'; e.eligible = valid_ol_sample; e.status = data.drv_status; e.uptime_ms = millis(); e.count = ++tmc_fault_event_count;
-            open_load_history_head = (open_load_history_head + 1) & 7;
-            if (open_load_history_count < 8) ++open_load_history_count;
-            SERIAL_ECHOPGM("TMC_OPEN_LOAD|driver="); SERIAL_ECHOPGM(name);
-            SERIAL_ECHOPGM("|coil=A|status=0x"); SERIAL_PRINT(data.drv_status, PrintBase::Hex);
-            SERIAL_ECHOPGM("|uptime_ms="); SERIAL_PRINT(millis(), PrintBase::Dec);
-            SERIAL_ECHOPGM("|count="); SERIAL_PRINT(tmc_fault_event_count, PrintBase::Dec);
-            SERIAL_ECHOPGM("|moving="); SERIAL_PRINT(axis_is_moving ? 1 : 0, PrintBase::Dec);
-            SERIAL_ECHOPGM("|enabled="); SERIAL_PRINT(st.isEnabled() ? 1 : 0, PrintBase::Dec);
-            SERIAL_ECHOPGM("|standstill="); SERIAL_PRINT(TEST(data.drv_status, 31) ? 1 : 0, PrintBase::Dec);
-            SERIAL_ECHOPGM("|stealth="); SERIAL_PRINT(TEST(data.drv_status, 14) ? 1 : 0, PrintBase::Dec);
-            SERIAL_ECHOPGM("|eligible="); SERIAL_PRINTLN(valid_ol_sample ? 1 : 0, PrintBase::Dec);
-            SERIAL_FLUSHTX();
-          }
-          if (raw_olb && !st.olb_latched) {
-            const uint8_t ix = open_load_history_head;
-            OpenLoadEvent &e = open_load_history[ix];
-            e.driver[0] = name[0]; e.driver[1] = name[1]; e.driver[2] = '\0';
-            e.coil = 'B'; e.eligible = valid_ol_sample; e.status = data.drv_status; e.uptime_ms = millis(); e.count = ++tmc_fault_event_count;
-            open_load_history_head = (open_load_history_head + 1) & 7;
-            if (open_load_history_count < 8) ++open_load_history_count;
-            SERIAL_ECHOPGM("TMC_OPEN_LOAD|driver="); SERIAL_ECHOPGM(name);
-            SERIAL_ECHOPGM("|coil=B|status=0x"); SERIAL_PRINT(data.drv_status, PrintBase::Hex);
-            SERIAL_ECHOPGM("|uptime_ms="); SERIAL_PRINT(millis(), PrintBase::Dec);
-            SERIAL_ECHOPGM("|count="); SERIAL_PRINT(tmc_fault_event_count, PrintBase::Dec);
-            SERIAL_ECHOPGM("|moving="); SERIAL_PRINT(axis_is_moving ? 1 : 0, PrintBase::Dec);
-            SERIAL_ECHOPGM("|enabled="); SERIAL_PRINT(st.isEnabled() ? 1 : 0, PrintBase::Dec);
-            SERIAL_ECHOPGM("|standstill="); SERIAL_PRINT(TEST(data.drv_status, 31) ? 1 : 0, PrintBase::Dec);
-            SERIAL_ECHOPGM("|stealth="); SERIAL_PRINT(TEST(data.drv_status, 14) ? 1 : 0, PrintBase::Dec);
-            SERIAL_ECHOPGM("|eligible="); SERIAL_PRINTLN(valid_ol_sample ? 1 : 0, PrintBase::Dec);
-            SERIAL_FLUSHTX();
-          }
+          const bool standstill = TEST(data.drv_status, 31), stealth = TEST(data.drv_status, 14),
+                     enabled = st.isEnabled(),
+                     valid_ol_sample = axis_is_moving && enabled && !standstill && !stealth;
+          const bool ola = valid_ol_sample && data.is_ola,
+                     olb = valid_ol_sample && data.is_olb;
+          // Log raw flag edges even when the stop filter rejects them, so the
+          // host can tell "never asserted" from "asserted but filtered".
+          // Standstill edges are skipped: the flags are unreliable there and
+          // would flood the host with reports whenever the machine is idle.
+          const bool raw_ola = !standstill && data.is_ola,
+                     raw_olb = !standstill && data.is_olb;
+          if (raw_ola && !st.ola_latched) report_open_load_edge(name, 'A', data.drv_status, axis_is_moving, enabled, stealth, valid_ol_sample);
+          if (raw_olb && !st.olb_latched) report_open_load_edge(name, 'B', data.drv_status, axis_is_moving, enabled, stealth, valid_ol_sample);
           st.ola_latched = raw_ola;
           st.olb_latched = raw_olb;
           st.ola_count = ola ? MIN(uint8_t(TMC_OPEN_LOAD_PERSISTENCE_POLLS), uint8_t(st.ola_count + 1)) : 0;
           st.olb_count = olb ? MIN(uint8_t(TMC_OPEN_LOAD_PERSISTENCE_POLLS), uint8_t(st.olb_count + 1)) : 0;
           if (st.ola_count >= TMC_OPEN_LOAD_PERSISTENCE_POLLS || st.olb_count >= TMC_OPEN_LOAD_PERSISTENCE_POLLS) {
+            planner.quick_stop(); // Stop motion now; kill() alone lets queued blocks run ~600ms longer
             const char coil = st.ola_count >= TMC_OPEN_LOAD_PERSISTENCE_POLLS ? 'A' : 'B';
-            const uint8_t ix = open_load_history_head;
-            OpenLoadEvent &e = open_load_history[ix];
-            e.driver[0] = name[0]; e.driver[1] = name[1]; e.driver[2] = '\0';
-            e.coil = coil; e.eligible = true; e.status = data.drv_status; e.uptime_ms = millis(); e.count = ++tmc_fault_event_count;
-            open_load_history_head = (open_load_history_head + 1) & 7;
-            if (open_load_history_count < 8) ++open_load_history_count;
-            // Machine-readable event is sent and drained before fatal-stop.
+            const uint32_t count = record_open_load_event(name, coil, true, data.drv_status);
             SERIAL_ECHOPGM("TMC_FAULT|v=1|kind=open_load|driver="); SERIAL_ECHOPGM(name);
             SERIAL_ECHOPGM("|coil="); SERIAL_CHAR(coil);
             SERIAL_ECHOPGM("|status=0x"); SERIAL_PRINT(data.drv_status, PrintBase::Hex);
             SERIAL_ECHOPGM("|uptime_ms="); SERIAL_PRINT(millis(), PrintBase::Dec);
-            SERIAL_ECHOPGM("|count="); SERIAL_PRINTLN(tmc_fault_event_count, PrintBase::Dec);
-            SERIAL_FLUSHTX();
-            marlin.kill(F("TMC open load"));
+            SERIAL_ECHOPGM("|count="); SERIAL_PRINTLN(count, PrintBase::Dec);
+            tmc_fault_halt(F("TMC open load"));
           }
         #endif
       #endif

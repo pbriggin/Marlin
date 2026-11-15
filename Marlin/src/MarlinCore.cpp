@@ -499,15 +499,22 @@ void Marlin::manage_inactivity(const bool no_stepper_sleep/*=false*/) {
     #endif
 
     static int killCount = 0;   // make the inactivity button a bit less responsive
-    if (kill_state())
-      killCount++;
-    else if (killCount > 0)
-      killCount--;
+    static int killPeak = 0;    // highest count reached during the current assertion
+    if (kill_state()) {
+      if (++killCount > killPeak) killPeak = killCount;
+    }
+    else if (killCount > 0 && --killCount == 0) {
+      // The pin was active for a while but never reached the threshold.
+      // Report it so a bouncing or noisy E-stop line shows up in the host log.
+      if (killPeak >= KILL_DELAY / 10) SERIAL_ECHOLNPGM("KILL_PIN|event=aborted|peak=", killPeak);
+      killPeak = 0;
+    }
 
     // Exceeded threshold and we can confirm that it was not accidental
     // KILL the machine
     // ----------------------------------------------------------------
     if (killCount >= KILL_DELAY) {
+      planner.quick_stop(); // Stop motion now; kill() alone lets queued blocks run ~600ms longer
       SERIAL_ERROR_START();
       SERIAL_ECHOLN(F(STR_KILL_PRE), F(STR_KILL_BUTTON));
       kill();
@@ -958,7 +965,28 @@ void Marlin::minkill(const bool steppers_off/*=false*/) {
 
   TERN_(HAS_SUICIDE, suicide());
 
-  #if ANY(HAS_KILL, SOFT_RESET_ON_KILL)
+  #if HAS_KILL && DISABLED(SOFT_RESET_ON_KILL)
+
+    // Latching E-stop reset: wait for the KILL input to be pressed (a press
+    // that caused this halt counts), then for a stable release, then reboot.
+    // A halt raised by firmware (e.g., a TMC fault) therefore stays halted
+    // until the operator presses and releases the E-stop. Both edges are
+    // debounced because interrupts are off and the line may be noisy.
+    for (uint16_t n = 0; n < 200; ) {     // pressed for 50ms
+      n = kill_state() ? n + 1 : 0;
+      DELAY_US(250);
+      hal.watchdog_refresh();
+    }
+    for (uint16_t n = 0; n < 2000; ) {    // released for 500ms
+      n = kill_state() ? 0 : n + 1;
+      DELAY_US(250);
+      hal.watchdog_refresh();
+    }
+
+    // Reboot the board
+    hal.reboot();
+
+  #elif ANY(HAS_KILL, SOFT_RESET_ON_KILL)
 
     // Wait for both KILL and ENC to be released
     while (TERN0(HAS_KILL, kill_state()) || TERN0(SOFT_RESET_ON_KILL, ui.button_pressed()))
