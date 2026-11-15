@@ -286,7 +286,7 @@
     static uint32_t tmc_fault_event_count;
     static uint8_t open_load_history_count;
     static uint8_t open_load_history_head;
-    struct OpenLoadEvent { char driver[3]; char coil; uint32_t status, uptime_ms, count; };
+    struct OpenLoadEvent { char driver[3]; char coil; bool eligible; uint32_t status, uptime_ms, count; };
     static OpenLoadEvent open_load_history[8];
 
     template<typename TMC>
@@ -313,7 +313,8 @@
         SERIAL_ECHOPGM("|coil="); SERIAL_CHAR(e.coil);
         SERIAL_ECHOPGM("|status=0x"); SERIAL_PRINT(e.status, PrintBase::Hex);
         SERIAL_ECHOPGM("|uptime_ms="); SERIAL_PRINT(e.uptime_ms, PrintBase::Dec);
-        SERIAL_ECHOPGM("|count="); SERIAL_PRINTLN(e.count, PrintBase::Dec);
+        SERIAL_ECHOPGM("|count="); SERIAL_PRINT(e.count, PrintBase::Dec);
+        SERIAL_ECHOPGM("|eligible="); SERIAL_PRINTLN(e.eligible ? 1 : 0, PrintBase::Dec);
       }
     }
 
@@ -405,41 +406,56 @@
 
         // The TMC5160 datasheet warns that ola/olb may be false in fast motion
         // and standstill. To catch wiring faults during a job, count only
-        // samples while this driver's X or Y axis is actively stepping, and
-        // require a persistent indication. Ignore standstill and StealthChop.
+        // samples while this driver's X or Y axis is moving, and require a
+        // persistent indication. Ignore standstill and StealthChop. Do not
+        // require a planner lookahead block here: the active stepper block can
+        // be executing even when get_future_block(0) has no eligible block.
         #if HAS_TMCX1X0
-          const block_t *active_block = planner.get_future_block(0);
-          const bool valid_ol_sample = axis_is_moving && st.isEnabled() && active_block && !TEST(data.drv_status, 31) && !TEST(data.drv_status, 14);
+          const bool raw_ola = data.is_ola, raw_olb = data.is_olb;
+          const bool valid_ol_sample = axis_is_moving && st.isEnabled() && !TEST(data.drv_status, 31) && !TEST(data.drv_status, 14);
           const bool ola = valid_ol_sample && data.is_ola;
           const bool olb = valid_ol_sample && data.is_olb;
-          if (ola && !st.ola_latched) {
+          // Log raw flag edges even when the stop filter rejects them. This
+          // distinguishes "the driver never asserted OL" from "OL was seen
+          // but the motion / chopper eligibility filter rejected the sample."
+          if (raw_ola && !st.ola_latched) {
             const uint8_t ix = open_load_history_head;
             OpenLoadEvent &e = open_load_history[ix];
             e.driver[0] = name[0]; e.driver[1] = name[1]; e.driver[2] = '\0';
-            e.coil = 'A'; e.status = data.drv_status; e.uptime_ms = millis(); e.count = ++tmc_fault_event_count;
+            e.coil = 'A'; e.eligible = valid_ol_sample; e.status = data.drv_status; e.uptime_ms = millis(); e.count = ++tmc_fault_event_count;
             open_load_history_head = (open_load_history_head + 1) & 7;
             if (open_load_history_count < 8) ++open_load_history_count;
             SERIAL_ECHOPGM("TMC_OPEN_LOAD|driver="); SERIAL_ECHOPGM(name);
             SERIAL_ECHOPGM("|coil=A|status=0x"); SERIAL_PRINT(data.drv_status, PrintBase::Hex);
             SERIAL_ECHOPGM("|uptime_ms="); SERIAL_PRINT(millis(), PrintBase::Dec);
-            SERIAL_ECHOPGM("|count="); SERIAL_PRINTLN(tmc_fault_event_count, PrintBase::Dec);
+            SERIAL_ECHOPGM("|count="); SERIAL_PRINT(tmc_fault_event_count, PrintBase::Dec);
+            SERIAL_ECHOPGM("|moving="); SERIAL_PRINT(axis_is_moving ? 1 : 0, PrintBase::Dec);
+            SERIAL_ECHOPGM("|enabled="); SERIAL_PRINT(st.isEnabled() ? 1 : 0, PrintBase::Dec);
+            SERIAL_ECHOPGM("|standstill="); SERIAL_PRINT(TEST(data.drv_status, 31) ? 1 : 0, PrintBase::Dec);
+            SERIAL_ECHOPGM("|stealth="); SERIAL_PRINT(TEST(data.drv_status, 14) ? 1 : 0, PrintBase::Dec);
+            SERIAL_ECHOPGM("|eligible="); SERIAL_PRINTLN(valid_ol_sample ? 1 : 0, PrintBase::Dec);
             SERIAL_FLUSHTX();
           }
-          if (olb && !st.olb_latched) {
+          if (raw_olb && !st.olb_latched) {
             const uint8_t ix = open_load_history_head;
             OpenLoadEvent &e = open_load_history[ix];
             e.driver[0] = name[0]; e.driver[1] = name[1]; e.driver[2] = '\0';
-            e.coil = 'B'; e.status = data.drv_status; e.uptime_ms = millis(); e.count = ++tmc_fault_event_count;
+            e.coil = 'B'; e.eligible = valid_ol_sample; e.status = data.drv_status; e.uptime_ms = millis(); e.count = ++tmc_fault_event_count;
             open_load_history_head = (open_load_history_head + 1) & 7;
             if (open_load_history_count < 8) ++open_load_history_count;
             SERIAL_ECHOPGM("TMC_OPEN_LOAD|driver="); SERIAL_ECHOPGM(name);
             SERIAL_ECHOPGM("|coil=B|status=0x"); SERIAL_PRINT(data.drv_status, PrintBase::Hex);
             SERIAL_ECHOPGM("|uptime_ms="); SERIAL_PRINT(millis(), PrintBase::Dec);
-            SERIAL_ECHOPGM("|count="); SERIAL_PRINTLN(tmc_fault_event_count, PrintBase::Dec);
+            SERIAL_ECHOPGM("|count="); SERIAL_PRINT(tmc_fault_event_count, PrintBase::Dec);
+            SERIAL_ECHOPGM("|moving="); SERIAL_PRINT(axis_is_moving ? 1 : 0, PrintBase::Dec);
+            SERIAL_ECHOPGM("|enabled="); SERIAL_PRINT(st.isEnabled() ? 1 : 0, PrintBase::Dec);
+            SERIAL_ECHOPGM("|standstill="); SERIAL_PRINT(TEST(data.drv_status, 31) ? 1 : 0, PrintBase::Dec);
+            SERIAL_ECHOPGM("|stealth="); SERIAL_PRINT(TEST(data.drv_status, 14) ? 1 : 0, PrintBase::Dec);
+            SERIAL_ECHOPGM("|eligible="); SERIAL_PRINTLN(valid_ol_sample ? 1 : 0, PrintBase::Dec);
             SERIAL_FLUSHTX();
           }
-          st.ola_latched = ola;
-          st.olb_latched = olb;
+          st.ola_latched = raw_ola;
+          st.olb_latched = raw_olb;
           st.ola_count = ola ? MIN(uint8_t(TMC_OPEN_LOAD_PERSISTENCE_POLLS), uint8_t(st.ola_count + 1)) : 0;
           st.olb_count = olb ? MIN(uint8_t(TMC_OPEN_LOAD_PERSISTENCE_POLLS), uint8_t(st.olb_count + 1)) : 0;
           if (st.ola_count >= TMC_OPEN_LOAD_PERSISTENCE_POLLS || st.olb_count >= TMC_OPEN_LOAD_PERSISTENCE_POLLS) {
@@ -447,7 +463,7 @@
             const uint8_t ix = open_load_history_head;
             OpenLoadEvent &e = open_load_history[ix];
             e.driver[0] = name[0]; e.driver[1] = name[1]; e.driver[2] = '\0';
-            e.coil = coil; e.status = data.drv_status; e.uptime_ms = millis(); e.count = ++tmc_fault_event_count;
+            e.coil = coil; e.eligible = true; e.status = data.drv_status; e.uptime_ms = millis(); e.count = ++tmc_fault_event_count;
             open_load_history_head = (open_load_history_head + 1) & 7;
             if (open_load_history_count < 8) ++open_load_history_count;
             // Machine-readable event is sent and drained before fatal-stop.
