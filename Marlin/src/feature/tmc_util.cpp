@@ -299,22 +299,6 @@
       return e.count;
     }
 
-    // Report a raw open-load flag edge, with the gates used by the stop filter
-    static void report_open_load_edge(const char * const name, const char coil, const uint32_t status,
-                                      const bool moving, const bool enabled, const bool standstill, const bool stealth, const bool eligible) {
-      const uint32_t count = record_open_load_event(name, coil, eligible, status);
-      SERIAL_ECHOPGM("TMC_OPEN_LOAD|driver="); SERIAL_ECHOPGM(name);
-      SERIAL_ECHOPGM("|coil="); SERIAL_CHAR(coil);
-      SERIAL_ECHOPGM("|status=0x"); SERIAL_PRINT(status, PrintBase::Hex);
-      SERIAL_ECHOPGM("|uptime_ms="); SERIAL_PRINT(millis(), PrintBase::Dec);
-      SERIAL_ECHOPGM("|count="); SERIAL_PRINT(count, PrintBase::Dec);
-      SERIAL_ECHOPGM("|moving="); SERIAL_PRINT(moving ? 1 : 0, PrintBase::Dec);
-      SERIAL_ECHOPGM("|enabled="); SERIAL_PRINT(enabled ? 1 : 0, PrintBase::Dec);
-      SERIAL_ECHOPGM("|standstill="); SERIAL_PRINT(standstill ? 1 : 0, PrintBase::Dec);
-      SERIAL_ECHOPGM("|stealth="); SERIAL_PRINT(stealth ? 1 : 0, PrintBase::Dec);
-      SERIAL_ECHOPGM("|eligible="); SERIAL_PRINTLN(eligible ? 1 : 0, PrintBase::Dec);
-    }
-
     // Halt after a TMC_FAULT record has been written. Motion was already
     // stopped with planner.quick_stop(), so the diagnostic dump costs no travel.
     // No explicit TX flush is needed (or available on the STM32 HAL): serial
@@ -436,32 +420,26 @@
      * in fast motion, so only samples taken while the axis is in the active
      * block, enabled, not in standstill and in spreadCycle are "eligible".
      *  - Eligible + flagged : count up; stop at TMC_OPEN_LOAD_PERSISTENCE_POLLS.
-     *  - Eligible + clean   : count down, so an isolated false flag leaks away.
+     *  - Eligible + clean   : reset. Only a hard failure, flagged on every
+     *                         consecutive moving sample, reaches the limit.
      *  - Not eligible       : hold. Gaps between blocks, or blocks that don't
-     *                         move this axis, don't reset the evidence.
+     *                         move this axis, neither add to nor break the run.
      *
-     * Rising edges of the raw flags are always reported (eligible or not).
-     * The edge latch is released only by an eligible clean sample, so a flag
-     * that sits or flickers at standstill is reported once, not continuously.
+     * Nothing is reported until the limit is reached; the only output is the
+     * TMC_FAULT record that accompanies the stop.
      */
     template<typename TMC>
     void monitor_open_load(TMC &st, const char * const name, const bool axis_is_moving) {
       const uint32_t ds = st.DRV_STATUS();
       if (ds == 0xFFFFFFFF || ds == 0x0) return;
 
-      const bool standstill = TEST(ds, 31), stealth = TEST(ds, 14), enabled = st.isEnabled(),
-                 eligible = axis_is_moving && enabled && !standstill && !stealth,
+      const bool eligible = axis_is_moving && st.isEnabled() && !TEST(ds, 31) && !TEST(ds, 14), // moving, not stst, not stealth
                  ola = TEST(ds, 29), olb = TEST(ds, 30);
-
-      if (ola && !st.ola_latched) report_open_load_edge(name, 'A', ds, axis_is_moving, enabled, standstill, stealth, eligible);
-      if (olb && !st.olb_latched) report_open_load_edge(name, 'B', ds, axis_is_moving, enabled, standstill, stealth, eligible);
-      if (ola) st.ola_latched = true; else if (eligible) st.ola_latched = false;
-      if (olb) st.olb_latched = true; else if (eligible) st.olb_latched = false;
 
       if (!eligible) return;
 
-      if (ola) st.ola_count++; else if (st.ola_count) st.ola_count--;
-      if (olb) st.olb_count++; else if (st.olb_count) st.olb_count--;
+      st.ola_count = ola ? st.ola_count + 1 : 0;
+      st.olb_count = olb ? st.olb_count + 1 : 0;
 
       if (st.ola_count >= TMC_OPEN_LOAD_PERSISTENCE_POLLS || st.olb_count >= TMC_OPEN_LOAD_PERSISTENCE_POLLS) {
         planner.quick_stop(); // Stop motion now; kill() alone lets queued blocks run ~600ms longer

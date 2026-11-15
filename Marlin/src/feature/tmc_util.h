@@ -65,7 +65,6 @@ class TMCStorage {
               error_count = 0,
               ola_count = 0,
               olb_count = 0;
-      bool ola_latched = false, olb_latched = false;
       bool flag_otpw = false;
       bool getOTPW() { return flag_otpw; }
       void clear_otpw() { flag_otpw = 0; }

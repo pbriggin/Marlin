@@ -963,8 +963,11 @@ void Marlin::minkill(const bool steppers_off/*=false*/) {
 
   TERN_(HAS_CUTTER, cutter.kill());  // Reiterate cutter shutdown
 
-  // Power off all steppers (for M112) or just the E steppers
-  steppers_off ? stepper.disable_all_steppers() : stepper.disable_e_steppers();
+  // Power off all steppers on any halt. Stock Marlin leaves the axes
+  // energized unless asked (M112), which left the motors live and hot at
+  // hold current until the board was reset.
+  UNUSED(steppers_off);
+  stepper.disable_all_steppers();
 
   TERN_(PSU_CONTROL, powerManager.power_off());
 

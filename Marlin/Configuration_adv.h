@@ -3498,7 +3498,7 @@
     #define REPORT_CURRENT_CHANGE
     #define STOP_ON_ERROR
     #define TMC_OPEN_LOAD_POLL_MS 50           // [ms] X/Y open-load sampling interval
-    #define TMC_OPEN_LOAD_PERSISTENCE_POLLS 4  // Net flagged samples (while the axis moves) before an open-load stop
+    #define TMC_OPEN_LOAD_PERSISTENCE_POLLS 12 // Consecutive flagged samples (while the axis moves) before an open-load stop
   #endif
 
   // @section tmc/hybrid
