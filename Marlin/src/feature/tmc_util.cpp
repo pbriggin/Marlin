@@ -315,6 +315,13 @@
     // True while a TMC fault stop is being raised or is waiting for M999,
     // so the same fault is reported once rather than on every poll.
     static bool tmc_fault_raising;
+
+    // Set by a fault stop. Once the host clears the stop (M999) every driver's
+    // settings are re-sent: a driver whose motor was unplugged under power can
+    // reset to its defaults, losing current and StallGuard configuration, and
+    // only a reboot used to restore them (seen as sensorless homing stopping
+    // early after the motor was reconnected).
+    static bool tmc_restore_needed;
     static bool tmc_fault_pending() { return tmc_fault_raising || marlin.isStopped(); }
 
     // Stop after a TMC_FAULT record has been written. Motion was already
@@ -326,6 +333,7 @@
     // and clear the fault with M999. The E-stop remains a full kill.
     static void tmc_fault_halt(FSTR_P const msg) {
       tmc_fault_raising = true;
+      tmc_restore_needed = true;
       TERN_(TMC_DEBUG, tmc_report_all());
       TERN_(HAS_MEDIA, card.abortFilePrintSoon());  // Completed by the main loop
       queue.clear();
@@ -602,6 +610,14 @@
   }
 
   void monitor_tmc_drivers() {
+    #if ENABLED(STOP_ON_ERROR)
+      if (tmc_restore_needed && !tmc_fault_pending()) {
+        tmc_restore_needed = false;
+        restore_trinamic_drivers();
+        SERIAL_ECHOLNPGM("TMC driver settings restored");
+      }
+    #endif
+
     // This runs from idle(), often inside an SD command whose port mask is
     // "no port". Fault and open-load records must reach every host.
     PORT_REDIRECT(SerialMask::All);
