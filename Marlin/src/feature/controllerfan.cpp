@@ -75,9 +75,14 @@ void ControllerFan::set_fan_speed(const uint8_t s) {
   speed = s < (CONTROLLERFAN_SPEED_MIN) ? 0 : s; // Fan OFF below minimum
 }
 
+static millis_t lastComponentOn = 0,  // Last time a stepper, heater, etc. was turned on
+                nextFanCheck = 0;     // Last time the state was checked
+
+// Skip the idle run-on time: drop to idle speed at the next update unless a
+// component is still on. Used when a fault stop powers the motors off.
+void ControllerFan::end_run_on() { lastComponentOn = 0; nextFanCheck = 0; }
+
 void ControllerFan::update() {
-  static millis_t lastComponentOn = 0,  // Last time a stepper, heater, etc. was turned on
-                  nextFanCheck = 0;     // Last time the state was checked
   const millis_t ms = millis();
   if (ELAPSED(ms, nextFanCheck)) {
     nextFanCheck = ms + 2500UL; // Not a time critical function, so only check every 2.5s

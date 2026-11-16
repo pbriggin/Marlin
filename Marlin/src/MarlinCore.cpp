@@ -950,6 +950,13 @@ void Marlin::kill(FSTR_P const lcd_error/*=nullptr*/, FSTR_P const lcd_component
 
 void Marlin::minkill(const bool steppers_off/*=false*/) {
 
+  // Power off every motor and fan now, while interrupts and the TMC SPI bus
+  // are still in their normal state. Stock Marlin leaves the axes energized
+  // unless asked (M112) and never touches the fans.
+  UNUSED(steppers_off);
+  stepper.disable_all_steppers();
+  thermalManager.zero_fan_speeds();
+
   // Wait a short time (allows messages to get out before shutting down.
   for (int i = 1000; i--;) DELAY_US(600);
 
@@ -963,11 +970,51 @@ void Marlin::minkill(const bool steppers_off/*=false*/) {
 
   TERN_(HAS_CUTTER, cutter.kill());  // Reiterate cutter shutdown
 
-  // Power off all steppers on any halt. Stock Marlin leaves the axes
-  // energized unless asked (M112), which left the motors live and hot at
-  // hold current until the board was reset.
-  UNUSED(steppers_off);
+  // Reiterate motors off, then force it in hardware. With SOFTWARE_DRIVER_ENABLE
+  // the drivers are normally switched over SPI and the ENABLE pins are left
+  // alone; driving them inactive here cuts the power stage regardless of what
+  // the SPI write achieved. The pins return to their reset state on reboot.
   stepper.disable_all_steppers();
+  #define _ENA_OFF(A) OUT_WRITE(A##_ENABLE_PIN, !A##_ENABLE_ON)
+  #if PIN_EXISTS(X_ENABLE)
+    _ENA_OFF(X);
+  #endif
+  #if PIN_EXISTS(X2_ENABLE)
+    OUT_WRITE(X2_ENABLE_PIN, !X_ENABLE_ON);
+  #endif
+  #if PIN_EXISTS(Y_ENABLE)
+    _ENA_OFF(Y);
+  #endif
+  #if PIN_EXISTS(Y2_ENABLE)
+    OUT_WRITE(Y2_ENABLE_PIN, !Y_ENABLE_ON);
+  #endif
+  #if PIN_EXISTS(Z_ENABLE)
+    _ENA_OFF(Z);
+  #endif
+  #if PIN_EXISTS(Z2_ENABLE)
+    OUT_WRITE(Z2_ENABLE_PIN, !Z_ENABLE_ON);
+  #endif
+  #if PIN_EXISTS(I_ENABLE)
+    _ENA_OFF(I);
+  #endif
+  #undef _ENA_OFF
+
+  // Fans off at the pin. PWM set through a timer keeps running with
+  // interrupts disabled, so take the pins back as plain outputs.
+  #define _FAN_OFF(P) OUT_WRITE(P, ENABLED(FAN_INVERTING) ? HIGH : LOW)
+  #if PIN_EXISTS(CONTROLLER_FAN)
+    OUT_WRITE(CONTROLLER_FAN_PIN, LOW);
+  #endif
+  #if HAS_FAN0
+    _FAN_OFF(FAN0_PIN);
+  #endif
+  #if HAS_FAN1
+    _FAN_OFF(FAN1_PIN);
+  #endif
+  #if HAS_FAN2
+    _FAN_OFF(FAN2_PIN);
+  #endif
+  #undef _FAN_OFF
 
   TERN_(PSU_CONTROL, powerManager.power_off());
 

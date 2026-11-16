@@ -37,6 +37,19 @@
 #include "../module/printcounter.h"
 #include "../libs/duration_t.h"
 #include "../gcode/gcode.h"
+#include "../gcode/queue.h"
+#include "../module/temperature.h"
+#if ENABLED(USE_CONTROLLER_FAN)
+  #include "controllerfan.h"
+#endif
+#include "../MarlinCore.h"
+
+#if HAS_MEDIA
+  #include "../sd/cardreader.h"
+#endif
+#if HAS_CUTTER
+  #include "spindle_laser.h"
+#endif
 
 #if ENABLED(SOVOL_SV06_RTS)
   #include "../lcd/sovol_rts/sovol_rts.h"
@@ -299,14 +312,30 @@
       return e.count;
     }
 
-    // Halt after a TMC_FAULT record has been written. Motion was already
+    // True while a TMC fault stop is being raised or is waiting for M999,
+    // so the same fault is reported once rather than on every poll.
+    static bool tmc_fault_raising;
+    static bool tmc_fault_pending() { return tmc_fault_raising || marlin.isStopped(); }
+
+    // Stop after a TMC_FAULT record has been written. Motion was already
     // stopped with planner.quick_stop(), so the diagnostic dump costs no travel.
-    // No explicit TX flush is needed (or available on the STM32 HAL): serial
-    // writes block while the TX buffer is full, and minkill() waits ~600ms
-    // with interrupts enabled before halting, which drains the remainder.
+    //
+    // This is a recoverable stop (Marlin "stopped" state), not kill(): the SD
+    // job is aborted, every motor is powered off and motion commands are
+    // refused, but the firmware keeps running so the host can still talk to it
+    // and clear the fault with M999. The E-stop remains a full kill.
     static void tmc_fault_halt(FSTR_P const msg) {
+      tmc_fault_raising = true;
       TERN_(TMC_DEBUG, tmc_report_all());
-      marlin.kill(msg);
+      TERN_(HAS_MEDIA, card.abortFilePrintSoon());  // Completed by the main loop
+      queue.clear();
+      TERN_(HAS_CUTTER, cutter.kill());
+      stepper.disable_all_steppers();
+      thermalManager.zero_fan_speeds();
+      TERN_(USE_CONTROLLER_FAN, controllerFan.end_run_on()); // Off within ~2.5s instead of after the idle time
+      SERIAL_ECHO_START(); SERIAL_ECHOLN(msg);
+      marlin.stop();                                // "Error:Printer stopped due to errors..."
+      tmc_fault_raising = false;
     }
 
     template<typename TMC>
@@ -418,7 +447,7 @@
      *
      * The TMC5160 datasheet warns that ola/olb may be false at standstill and
      * in fast motion, so only samples taken while the axis is in the active
-     * block, enabled, not in standstill and in spreadCycle are "eligible".
+     * block, not in standstill and in spreadCycle are "eligible".
      *  - Eligible + flagged : count up; stop at TMC_OPEN_LOAD_PERSISTENCE_POLLS.
      *  - Eligible + clean   : reset. Only a hard failure, flagged on every
      *                         consecutive moving sample, reaches the limit.
@@ -428,13 +457,61 @@
      * Nothing is reported until the limit is reached; the only output is the
      * TMC_FAULT record that accompanies the stop.
      */
+    #if TMC_OPEN_LOAD_STATS_POLLS
+      // Diagnostic: what the driver reported over the last
+      // TMC_OPEN_LOAD_STATS_POLLS samples taken while the axis was moving.
+      // Log-only; hosts that don't know the TMC_OL_STATS record ignore it.
+      struct OpenLoadStats {
+        uint16_t moving, enabled, stst, eligible, a, b, ab, sg_min, sg_max;
+        uint8_t run_a, run_b, max_run_a, max_run_b;
+      };
+      static OpenLoadStats open_load_stats[4];
+
+      static void open_load_stats_sample(const uint8_t ix, const char * const name, const uint32_t ds,
+                                         const bool enabled, const bool eligible, const bool ola, const bool olb) {
+        OpenLoadStats &t = open_load_stats[ix];
+        const uint16_t sg = ds & 0x3FF;
+        if (!t.moving) t.sg_min = t.sg_max = sg;
+        NOMORE(t.sg_min, sg); NOLESS(t.sg_max, sg);
+        ++t.moving;
+        if (enabled) ++t.enabled;
+        if (TEST(ds, 31)) ++t.stst;
+        if (eligible) ++t.eligible;
+        if (ola) ++t.a;
+        if (olb) ++t.b;
+        if (ola && olb) ++t.ab;
+        t.run_a = ola ? t.run_a + 1 : 0; NOLESS(t.max_run_a, t.run_a);
+        t.run_b = olb ? t.run_b + 1 : 0; NOLESS(t.max_run_b, t.run_b);
+        if (t.moving < TMC_OPEN_LOAD_STATS_POLLS) return;
+        SERIAL_ECHOPGM("TMC_OL_STATS|driver="); SERIAL_ECHOPGM(name);
+        SERIAL_ECHOPGM("|moving=", t.moving, "|enabled=", t.enabled, "|stst=", t.stst, "|eligible=", t.eligible);
+        SERIAL_ECHOPGM("|a=", t.a, "|b=", t.b, "|ab=", t.ab, "|run_a=", t.max_run_a, "|run_b=", t.max_run_b);
+        SERIAL_ECHOPGM("|sg_min=", t.sg_min, "|sg_max=", t.sg_max);
+        SERIAL_ECHOPGM("|cs=", uint16_t((ds >> 16) & 0x1F));
+        SERIAL_ECHOPGM("|status=0x"); SERIAL_PRINTLN(ds, PrintBase::Hex);
+        const uint8_t run_a = t.run_a, run_b = t.run_b;
+        t = OpenLoadStats();
+        t.run_a = t.max_run_a = run_a; t.run_b = t.max_run_b = run_b; // runs carry across windows
+      }
+    #endif
+
     template<typename TMC>
-    void monitor_open_load(TMC &st, const char * const name, const bool axis_is_moving) {
+    void monitor_open_load(TMC &st, const uint8_t ix, const char * const name, const bool axis_is_moving) {
       const uint32_t ds = st.DRV_STATUS();
       if (ds == 0xFFFFFFFF || ds == 0x0) return;
 
-      const bool eligible = axis_is_moving && st.isEnabled() && !TEST(ds, 31) && !TEST(ds, 14), // moving, not stst, not stealth
+      // Don't gate on the driver's own enable read-back (st.isEnabled()).
+      // Hot-unplugging a motor makes a TMC5160 read back as disabled while it
+      // keeps reporting ola/olb, so that gate rejected every sample of exactly
+      // the fault this check exists for. A moving axis is commanded enabled.
+      const bool eligible = axis_is_moving && !TEST(ds, 31) && !TEST(ds, 14), // moving, not stst, not stealth
                  ola = TEST(ds, 29), olb = TEST(ds, 30);
+
+      #if TMC_OPEN_LOAD_STATS_POLLS
+        if (axis_is_moving) open_load_stats_sample(ix, name, ds, st.isEnabled(), eligible, ola, olb);
+      #else
+        UNUSED(ix);
+      #endif
 
       if (!eligible) return;
 
@@ -450,6 +527,7 @@
         SERIAL_ECHOPGM("|status=0x"); SERIAL_PRINT(ds, PrintBase::Hex);
         SERIAL_ECHOPGM("|uptime_ms="); SERIAL_PRINT(millis(), PrintBase::Dec);
         SERIAL_ECHOPGM("|count="); SERIAL_PRINTLN(count, PrintBase::Dec);
+        st.ola_count = st.olb_count = 0;
         tmc_fault_halt(F("TMC open load"));
       }
     }
@@ -459,20 +537,21 @@
 
     static void monitor_open_loads() {
       static millis_t next_ol_poll = 0;
+      if (tmc_fault_pending()) return;
       const millis_t ms = millis();
       if (!ELAPSED(ms, next_ol_poll)) return;
       next_ol_poll = ms + TMC_OPEN_LOAD_POLL_MS;
       #if _OL_CAPABLE(X)
-        monitor_open_load(stepperX, "X", Stepper::axis_is_moving(X_AXIS));
+        monitor_open_load(stepperX, 0, "X", Stepper::axis_is_moving(X_AXIS));
       #endif
       #if _OL_CAPABLE(X2)
-        monitor_open_load(stepperX2, "X2", Stepper::axis_is_moving(X_AXIS));
+        monitor_open_load(stepperX2, 1, "X2", Stepper::axis_is_moving(X_AXIS));
       #endif
       #if _OL_CAPABLE(Y)
-        monitor_open_load(stepperY, "Y", Stepper::axis_is_moving(Y_AXIS));
+        monitor_open_load(stepperY, 2, "Y", Stepper::axis_is_moving(Y_AXIS));
       #endif
       #if _OL_CAPABLE(Y2)
-        monitor_open_load(stepperY2, "Y2", Stepper::axis_is_moving(Y_AXIS));
+        monitor_open_load(stepperY2, 3, "Y2", Stepper::axis_is_moving(Y_AXIS));
       #endif
     }
 
@@ -492,7 +571,7 @@
       else if (st.error_count > 0) st.error_count--;
 
       #if ENABLED(STOP_ON_ERROR)
-        if (st.error_count >= 10) {
+        if (st.error_count >= 10 && !tmc_fault_pending()) {
           report_driver_error(st, data, data.is_ot ? "overtemperature" : "short",
             (data.drv_status & ((1UL << 27) | (1UL << 12))) ? 'A' : (data.is_s2g ? 'B' : '-'));
         }

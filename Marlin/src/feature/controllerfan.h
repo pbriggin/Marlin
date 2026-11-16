@@ -68,6 +68,7 @@ class ControllerFan {
     static void reset() { TERN_(CONTROLLER_FAN_EDITABLE, settings = controllerFan_defaults); }
     static void setup();
     static void update();
+    static void end_run_on();
 };
 
 extern ControllerFan controllerFan;
