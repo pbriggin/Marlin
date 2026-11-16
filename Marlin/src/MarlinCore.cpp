@@ -883,6 +883,19 @@ void Marlin::idle(const bool no_stepper_sleep/*=false*/) {
     }
   #endif
 
+  // Unsolicited position reports while an SD job is running
+  #if HAS_MEDIA && defined(SD_JOB_POSITION_REPORT_MS)
+    if (card.isPrinting()) {
+      static millis_t next_position_report_ms = 0;
+      const millis_t ms = millis();
+      if (ELAPSED(ms, next_position_report_ms)) {
+        next_position_report_ms = ms + SD_JOB_POSITION_REPORT_MS;
+        PORT_REDIRECT(SerialMask::All); // An SD command's own port mask is "no port"
+        report_real_position();
+      }
+    }
+  #endif
+
   // Update the Průša MMU2
   #if HAS_PRUSA_MMU3
     mmu3.mmu_loop();

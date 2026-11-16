@@ -4070,6 +4070,14 @@
 #endif
 
 /**
+ * Report the real (stepper) position to every host at this interval while an
+ * SD job is printing, with no host polling. Reports stop when the job ends or
+ * pauses, so they never interleave with idle-time protocols (e.g., binary
+ * file transfer). Comment out to disable.
+ */
+#define SD_JOB_POSITION_REPORT_MS 500
+
+/**
  * M115 - Report capabilities. Disable to save ~1150 bytes of flash.
  *        Some hosts (and serial TFT displays) rely on this feature.
  */
