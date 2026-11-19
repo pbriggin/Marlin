@@ -340,7 +340,7 @@ enum StealthIndex : uint8_t {
 
     TERN(HYBRID_THRESHOLD, st.set_pwm_thrs(hyb_thrs), UNUSED(hyb_thrs));
 
-    st.GSTAT(); // Clear GSTAT
+    st.GSTAT(0b111); // Clear GSTAT (write 1 to clear; a read alone leaves the bits set)
   }
 #endif // TMC2130
 
@@ -381,7 +381,7 @@ enum StealthIndex : uint8_t {
 
     TERN(HYBRID_THRESHOLD, st.set_pwm_thrs(hyb_thrs), UNUSED(hyb_thrs));
 
-    st.GSTAT(); // Clear GSTAT
+    st.GSTAT(0b111); // Clear GSTAT (write 1 to clear; a read alone leaves the bits set)
   }
 #endif // TMC2160
 
@@ -986,7 +986,7 @@ enum StealthIndex : uint8_t {
 
     TERN(HYBRID_THRESHOLD, st.set_pwm_thrs(hyb_thrs), UNUSED(hyb_thrs));
 
-    st.GSTAT(); // Clear GSTAT
+    st.GSTAT(0b111); // Clear GSTAT (write 1 to clear; a read alone leaves the bits set)
   }
 #endif // TMC5130
 
@@ -1027,7 +1027,7 @@ enum StealthIndex : uint8_t {
 
     TERN(HYBRID_THRESHOLD, st.set_pwm_thrs(hyb_thrs), UNUSED(hyb_thrs));
 
-    st.GSTAT(); // Clear GSTAT
+    st.GSTAT(0b111); // Clear GSTAT (write 1 to clear; a read alone leaves the bits set)
   }
 #endif // TMC5160
 

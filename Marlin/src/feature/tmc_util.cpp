@@ -346,6 +346,25 @@
       tmc_fault_raising = false;
     }
 
+    // Append "|gstat=0x.." to a TMC_FAULT record, then clear the driver's GSTAT.
+    // GSTAT bit 0 = reset (the IC reset and lost its register settings),
+    // bit 1 = drv_err (driver shut down: overtemperature or short),
+    // bit 2 = uv_cp (charge pump undervoltage, i.e. motor supply too low).
+    // An open-load stop with reset or uv_cp set points at the driver's supply
+    // or the IC itself rather than an open motor coil. The bits latch until
+    // written with 1 (TMC5160 does not clear them on read), so clear after
+    // reporting to keep the next record fresh.
+    template<typename TMC>
+    static void report_and_clear_gstat(TMC &st) {
+      const uint8_t gstat = st.GSTAT();
+      st.GSTAT(0b111);
+      SERIAL_ECHOPGM("|gstat=0x"); SERIAL_PRINT(gstat, PrintBase::Hex);
+    }
+    #if HAS_DRIVER(TMC2660)
+      template<char AXIS_LETTER, char DRIVER_ID, AxisEnum AXIS_ID>
+      static void report_and_clear_gstat(TMCMarlin<TMC2660Stepper, AXIS_LETTER, DRIVER_ID, AXIS_ID>&) {} // No GSTAT register
+    #endif
+
     template<typename TMC>
     void report_driver_error(TMC &st, const TMC_driver_data &data, const char *kind, const char coil = '-') {
       planner.quick_stop(); // Stop motion now; kill() alone lets queued blocks run ~600ms longer
@@ -354,6 +373,7 @@
       SERIAL_ECHOPGM("|driver="); st.printLabel();
       SERIAL_ECHOPGM("|coil="); SERIAL_CHAR(coil);
       SERIAL_ECHOPGM("|status=0x"); SERIAL_PRINT(data.drv_status, PrintBase::Hex);
+      report_and_clear_gstat(st);
       SERIAL_ECHOPGM("|uptime_ms="); SERIAL_PRINT(millis(), PrintBase::Dec);
       SERIAL_ECHOPGM("|count="); SERIAL_PRINTLN(event_count, PrintBase::Dec);
       TERN_(SOVOL_SV06_RTS, rts.gotoPage(ID_DriverError_L, ID_DriverError_D));
@@ -533,6 +553,7 @@
         SERIAL_ECHOPGM("TMC_FAULT|v=1|kind=open_load|driver="); SERIAL_ECHOPGM(name);
         SERIAL_ECHOPGM("|coil="); SERIAL_CHAR(coil);
         SERIAL_ECHOPGM("|status=0x"); SERIAL_PRINT(ds, PrintBase::Hex);
+        report_and_clear_gstat(st);
         SERIAL_ECHOPGM("|uptime_ms="); SERIAL_PRINT(millis(), PrintBase::Dec);
         SERIAL_ECHOPGM("|count="); SERIAL_PRINTLN(count, PrintBase::Dec);
         st.ola_count = st.olb_count = 0;
