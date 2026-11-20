@@ -468,6 +468,9 @@
     #ifndef TMC_OPEN_LOAD_POLL_MS
       #define TMC_OPEN_LOAD_POLL_MS 50
     #endif
+    #ifndef TMC_OPEN_LOAD_MIN_SPEED
+      #define TMC_OPEN_LOAD_MIN_SPEED 10
+    #endif
 
     /**
      * Open-load (broken / unplugged motor wire) check for one X or Y driver,
@@ -475,7 +478,14 @@
      *
      * The TMC5160 datasheet warns that ola/olb may be false at standstill and
      * in fast motion, so only samples taken while the axis is in the active
-     * block, not in standstill and in spreadCycle are "eligible".
+     * block, moving at TMC_OPEN_LOAD_MIN_SPEED or faster, not in standstill and
+     * in spreadCycle are "eligible".
+     *
+     * The speed floor matters because "in the active block" includes an axis
+     * that is barely moving: an X move with a fraction of a mm of Y keeps Y in
+     * the block, stepping too slowly for the driver to report stst. Field logs
+     * showed Y and Y2 tripping, with no driver reset (GSTAT 0), while Y crept
+     * at under 1 mm/s, repeatedly at the same toolpath point.
      *  - Eligible + flagged : count up; stop at TMC_OPEN_LOAD_PERSISTENCE_POLLS.
      *  - Eligible + clean   : reset. Only a hard failure, flagged on every
      *                         consecutive moving sample, reaches the limit.
@@ -524,7 +534,7 @@
     #endif
 
     template<typename TMC>
-    void monitor_open_load(TMC &st, const uint8_t ix, const char * const name, const bool axis_is_moving) {
+    void monitor_open_load(TMC &st, const uint8_t ix, const char * const name, const bool axis_is_moving, const bool fast_enough) {
       const uint32_t ds = st.DRV_STATUS();
       if (ds == 0xFFFFFFFF || ds == 0x0) return;
 
@@ -532,7 +542,8 @@
       // Hot-unplugging a motor makes a TMC5160 read back as disabled while it
       // keeps reporting ola/olb, so that gate rejected every sample of exactly
       // the fault this check exists for. A moving axis is commanded enabled.
-      const bool eligible = axis_is_moving && !TEST(ds, 31) && !TEST(ds, 14), // moving, not stst, not stealth
+      const bool eligible = axis_is_moving && fast_enough      // moving at a real speed
+                         && !TEST(ds, 31) && !TEST(ds, 14),    // not stst, not stealth
                  ola = TEST(ds, 29), olb = TEST(ds, 30);
 
       #if TMC_OPEN_LOAD_STATS_POLLS
@@ -564,23 +575,48 @@
     // Drivers whose DRV_STATUS has ola/olb at bits 29/30 and stst at bit 31
     #define _OL_CAPABLE(A) (AXIS_DRIVER_TYPE(A,TMC2130) || AXIS_DRIVER_TYPE(A,TMC2160) || AXIS_DRIVER_TYPE(A,TMC5130) || AXIS_DRIVER_TYPE(A,TMC5160))
 
+    // True if the axis covered at least TMC_OPEN_LOAD_MIN_SPEED worth of travel
+    // since the previous poll. Measured from the stepper's own position count,
+    // so it doesn't depend on the driver's settings (a reset driver's TSTEP is
+    // scaled by its default 256 microsteps and would misreport its speed).
+    // A position jump from homing or G92 can pass once; one sample can't reach
+    // the persistence limit on its own.
+    static bool open_load_axis_fast_enough(const AxisEnum axis, int32_t &last_steps, const millis_t dt_ms) {
+      const int32_t steps = stepper.position(axis);
+      const float mm = ABS(steps - last_steps) * planner.mm_per_step[axis];
+      last_steps = steps;
+      return dt_ms && mm * 1000.0f >= float(TMC_OPEN_LOAD_MIN_SPEED) * float(dt_ms);
+    }
+
     static void monitor_open_loads() {
-      static millis_t next_ol_poll = 0;
+      static millis_t next_ol_poll = 0, last_ol_poll = 0;
       if (tmc_fault_pending()) return;
       const millis_t ms = millis();
       if (!ELAPSED(ms, next_ol_poll)) return;
       next_ol_poll = ms + TMC_OPEN_LOAD_POLL_MS;
+      const millis_t dt_ms = ms - last_ol_poll;
+      last_ol_poll = ms;
+      #if _OL_CAPABLE(X) || _OL_CAPABLE(X2)
+        static int32_t last_x_steps = 0;
+        const bool x_moving = Stepper::axis_is_moving(X_AXIS),
+                   x_fast = open_load_axis_fast_enough(X_AXIS, last_x_steps, dt_ms);
+      #endif
+      #if _OL_CAPABLE(Y) || _OL_CAPABLE(Y2)
+        static int32_t last_y_steps = 0;
+        const bool y_moving = Stepper::axis_is_moving(Y_AXIS),
+                   y_fast = open_load_axis_fast_enough(Y_AXIS, last_y_steps, dt_ms);
+      #endif
       #if _OL_CAPABLE(X)
-        monitor_open_load(stepperX, 0, "X", Stepper::axis_is_moving(X_AXIS));
+        monitor_open_load(stepperX, 0, "X", x_moving, x_fast);
       #endif
       #if _OL_CAPABLE(X2)
-        monitor_open_load(stepperX2, 1, "X2", Stepper::axis_is_moving(X_AXIS));
+        monitor_open_load(stepperX2, 1, "X2", x_moving, x_fast);
       #endif
       #if _OL_CAPABLE(Y)
-        monitor_open_load(stepperY, 2, "Y", Stepper::axis_is_moving(Y_AXIS));
+        monitor_open_load(stepperY, 2, "Y", y_moving, y_fast);
       #endif
       #if _OL_CAPABLE(Y2)
-        monitor_open_load(stepperY2, 3, "Y2", Stepper::axis_is_moving(Y_AXIS));
+        monitor_open_load(stepperY2, 3, "Y2", y_moving, y_fast);
       #endif
     }
 

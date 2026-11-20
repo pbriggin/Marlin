@@ -3500,6 +3500,7 @@
     #define TMC_OPEN_LOAD_POLL_MS 50           // [ms] X/Y open-load sampling interval
     #define TMC_OPEN_LOAD_STATS_POLLS 0        // Diagnostic: log a TMC_OL_STATS record per driver every N moving samples (0 = off)
     #define TMC_OPEN_LOAD_PERSISTENCE_POLLS 12 // Consecutive flagged samples (while the axis moves) before an open-load stop
+    #define TMC_OPEN_LOAD_MIN_SPEED 10         // [mm/s] Ignore open-load samples while the axis moves slower than this (flags are unreliable near standstill)
   #endif
 
   // @section tmc/hybrid
